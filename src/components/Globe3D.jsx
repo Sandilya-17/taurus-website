@@ -1,220 +1,268 @@
 import { useEffect, useRef } from 'react';
+import * as THREE from 'three';
 
-export default function Globe3D() {
-  const canvasRef = useRef(null);
+// Ports Taurus/APL-style network actually serves
+const PORTS = [
+  { name: 'Accra', lat: 5.6, lon: -0.19, hq: true },
+  { name: 'Tema', lat: 5.62, lon: -0.0 },
+  { name: 'Lagos', lat: 6.45, lon: 3.39 },
+  { name: 'Abidjan', lat: 5.31, lon: -4.03 },
+  { name: 'Dakar', lat: 14.69, lon: -17.45 },
+  { name: 'Lomé', lat: 6.13, lon: 1.22 },
+  { name: 'Rotterdam', lat: 51.92, lon: 4.48 },
+  { name: 'Shanghai', lat: 31.23, lon: 121.47 },
+  { name: 'Dubai', lat: 25.2, lon: 55.27 },
+  { name: 'New York', lat: 40.71, lon: -74.0 },
+];
+
+const ROUTES = [
+  [0, 2], [0, 3], [0, 4], [0, 5], [0, 1],
+  [0, 6], [0, 7], [0, 8], [0, 9], [2, 6], [3, 6],
+];
+
+function latLonToVec3(lat, lon, radius) {
+  const phi = (90 - lat) * (Math.PI / 180);
+  const theta = (lon + 180) * (Math.PI / 180);
+  return new THREE.Vector3(
+    -radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.cos(phi),
+    radius * Math.sin(phi) * Math.sin(theta)
+  );
+}
+
+// Build a great-circle-ish arc between two points, lifted outward
+function buildArcCurve(p1, p2, radius) {
+  const d = p1.distanceTo(p2);
+  const mid = p1.clone().add(p2).multiplyScalar(0.5);
+  const liftAmount = radius * (0.25 + d / radius * 0.18);
+  mid.normalize().multiplyScalar(radius + liftAmount);
+  return new THREE.QuadraticBezierCurve3(p1, mid, p2);
+}
+
+export default function Globe3D({ height = '100%' }) {
+  const mountRef = useRef(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    let animId;
-    let t = 0;
+    const mount = mountRef.current;
+    if (!mount) return;
 
-    const resize = () => {
-      const size = Math.min(canvas.offsetWidth, canvas.offsetHeight);
-      canvas.width = size;
-      canvas.height = size;
-    };
-    resize();
+    let width = mount.clientWidth;
+    let height_ = mount.clientHeight;
 
-    // Approx. city coords (lon, lat) → sphere points
-    const cities = [
-      { name: 'Accra', lon: -0.2, lat: 5.6 },
-      { name: 'Lagos', lon: 3.4, lat: 6.5 },
-      { name: 'Abidjan', lon: -4.0, lat: 5.3 },
-      { name: 'Dakar', lon: -17.4, lat: 14.7 },
-      { name: 'Kumasi', lon: -1.6, lat: 6.7 },
-      { name: 'London', lon: -0.1, lat: 51.5 },
-      { name: 'Dubai', lon: 55.3, lat: 25.2 },
-      { name: 'Beijing', lon: 116.4, lat: 39.9 },
-      { name: 'NY', lon: -74.0, lat: 40.7 },
-    ];
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(38, width / height_, 0.1, 100);
+    camera.position.set(0, 0.15, 5.6);
 
-    // Routes (city index pairs)
-    const routes = [
-      [0,1],[1,2],[2,3],[0,3],[0,4],[0,5],[0,6],[0,7],[0,8],[1,5],[1,6]
-    ];
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(width, height_);
+    mount.appendChild(renderer.domElement);
 
-    const toSphere = (lon, lat, r) => {
-      const lonR = (lon * Math.PI) / 180;
-      const latR = (lat * Math.PI) / 180;
-      return {
-        x: r * Math.cos(latR) * Math.cos(lonR),
-        y: r * Math.sin(latR),
-        z: r * Math.cos(latR) * Math.sin(lonR),
-      };
-    };
+    const RADIUS = 1.7;
+    const group = new THREE.Group();
+    group.rotation.z = 0.2;
+    scene.add(group);
 
-    const rotateY = (p, a) => ({
-      x: p.x * Math.cos(a) + p.z * Math.sin(a),
-      y: p.y,
-      z: -p.x * Math.sin(a) + p.z * Math.cos(a),
+    // ── Wireframe sphere (graticule look) ──
+    const sphereGeo = new THREE.SphereGeometry(RADIUS, 48, 32);
+    const wireMat = new THREE.MeshBasicMaterial({
+      color: 0x2a4a6e,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.22,
     });
+    const wireSphere = new THREE.Mesh(sphereGeo, wireMat);
+    group.add(wireSphere);
 
-    const project = (p, W, H, fov = 600) => {
-      const scale = fov / (fov + p.z + W * 0.5);
-      return {
-        x: p.x * scale + W / 2,
-        y: -p.y * scale + H / 2,
-        visible: p.z + W * 0.5 > 0,
-        scale,
-      };
+    // ── Solid inner sphere for depth / occlusion ──
+    const innerGeo = new THREE.SphereGeometry(RADIUS * 0.992, 48, 32);
+    const innerMat = new THREE.MeshBasicMaterial({ color: 0x070d17 });
+    group.add(new THREE.Mesh(innerGeo, innerMat));
+
+    // ── Continent dot field (procedural land mask via simple lat/lon land approximation) ──
+    // Lightweight landmass approximation using a coarse point-in-region test.
+    const isLand = (lat, lon) => {
+      // Very rough continent silhouettes for a stylized dot-globe (not geographically perfect).
+      if (lat > -35 && lat < 37 && lon > -18 && lon < 52) return true; // Africa
+      if (lat > 36 && lat < 71 && lon > -10 && lon < 40) return true; // Europe
+      if (lat > 5 && lat < 55 && lon > 40 && lon < 145) return true; // Asia
+      if (lat > -45 && lat < 5 && lon > 95 && lon < 155) return true; // SE Asia/Oceania edge
+      if (lat > 7 && lat < 72 && lon > -168 && lon < -52) return true; // N. America
+      if (lat > -55 && lat < 7 && lon > -82 && lon < -34) return true; // S. America
+      if (lat < -10 && lat > -45 && lon > 112 && lon < 154) return true; // Australia
+      return false;
     };
 
-    const drawArc = (p1, p2, W, H, col, alpha) => {
-      const mid = {
-        x: (p1.x + p2.x) * 0.5,
-        y: (p1.y + p2.y) * 0.5,
-        z: (p1.z + p2.z) * 0.5,
-      };
-      const len = Math.sqrt(mid.x ** 2 + mid.y ** 2 + mid.z ** 2);
-      const R = W * 0.35;
-      const curve = { x: (mid.x / len) * R * 1.35, y: (mid.y / len) * R * 1.35, z: (mid.z / len) * R * 1.35 };
-      const cp = project(curve, W, H);
-      const pp1 = project(p1, W, H);
-      const pp2 = project(p2, W, H);
-      if (!pp1.visible && !pp2.visible) return;
-      ctx.save();
-      ctx.globalAlpha = alpha * 0.65;
-      ctx.strokeStyle = col;
-      ctx.lineWidth = 0.8;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(pp1.x, pp1.y);
-      ctx.quadraticCurveTo(cp.x, cp.y, pp2.x, pp2.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
+    const dotPositions = [];
+    const dotCount = 2600;
+    for (let i = 0; i < dotCount; i++) {
+      const u = Math.random();
+      const v = Math.random();
+      const lat = 90 - Math.acos(2 * v - 1) * 180 / Math.PI;
+      const lon = 360 * u - 180;
+      if (isLand(lat, lon)) {
+        const p = latLonToVec3(lat, lon, RADIUS * 1.001);
+        dotPositions.push(p.x, p.y, p.z);
+      }
+    }
+    const dotGeo = new THREE.BufferGeometry();
+    dotGeo.setAttribute('position', new THREE.Float32BufferAttribute(dotPositions, 3));
+    const dotMat = new THREE.PointsMaterial({
+      color: 0x6b8caa,
+      size: 0.018,
+      transparent: true,
+      opacity: 0.55,
+      sizeAttenuation: true,
+    });
+    const dots = new THREE.Points(dotGeo, dotMat);
+    group.add(dots);
+
+    // ── Port markers ──
+    const portGroup = new THREE.Group();
+    const portMeshes = [];
+    PORTS.forEach((port) => {
+      const pos = latLonToVec3(port.lat, port.lon, RADIUS * 1.01);
+      const size = port.hq ? 0.028 : 0.016;
+      const color = port.hq ? 0xe8c77e : 0xc9601a;
+      const geo = new THREE.SphereGeometry(size, 12, 12);
+      const mat = new THREE.MeshBasicMaterial({ color });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.copy(pos);
+      portGroup.add(mesh);
+      portMeshes.push(mesh);
+
+      // Halo ring
+      const ringGeo = new THREE.RingGeometry(size * 1.8, size * 2.2, 24);
+      const ringMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.copy(pos);
+      ring.lookAt(pos.clone().multiplyScalar(2));
+      portGroup.add(ring);
+    });
+    group.add(portGroup);
+
+    // ── Shipping lane arcs ──
+    const arcGroup = new THREE.Group();
+    const arcLines = [];
+    ROUTES.forEach(([aIdx, bIdx]) => {
+      const a = latLonToVec3(PORTS[aIdx].lat, PORTS[aIdx].lon, RADIUS * 1.005);
+      const b = latLonToVec3(PORTS[bIdx].lat, PORTS[bIdx].lon, RADIUS * 1.005);
+      const curve = buildArcCurve(a, b, RADIUS);
+      const points = curve.getPoints(64);
+      const geo = new THREE.BufferGeometry().setFromPoints(points);
+      const mat = new THREE.LineBasicMaterial({ color: 0xc9601a, transparent: true, opacity: 0.45 });
+      const line = new THREE.Line(geo, mat);
+      arcGroup.add(line);
+      arcLines.push({ curve, points });
+
+      // Traveling pulse dot along the arc
+      const pulseGeo = new THREE.SphereGeometry(0.014, 8, 8);
+      const pulseMat = new THREE.MeshBasicMaterial({ color: 0xffe1b3 });
+      const pulse = new THREE.Mesh(pulseGeo, pulseMat);
+      pulse.userData = { curve, t: Math.random(), speed: 0.08 + Math.random() * 0.06 };
+      arcGroup.add(pulse);
+      arcLines[arcLines.length - 1].pulse = pulse;
+    });
+    group.add(arcGroup);
+
+    // ── Lighting ──
+    const ambient = new THREE.AmbientLight(0x8899aa, 0.7);
+    scene.add(ambient);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    dirLight.position.set(3, 2, 4);
+    scene.add(dirLight);
+
+    // ── Outer glow sprite ──
+    const glowCanvas = document.createElement('canvas');
+    glowCanvas.width = 256; glowCanvas.height = 256;
+    const gctx = glowCanvas.getContext('2d');
+    const grad = gctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+    grad.addColorStop(0, 'rgba(201,96,26,0.35)');
+    grad.addColorStop(0.5, 'rgba(201,96,26,0.08)');
+    grad.addColorStop(1, 'rgba(201,96,26,0)');
+    gctx.fillStyle = grad;
+    gctx.fillRect(0, 0, 256, 256);
+    const glowTex = new THREE.CanvasTexture(glowCanvas);
+    const glowMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false });
+    const glowSprite = new THREE.Sprite(glowMat);
+    glowSprite.scale.set(RADIUS * 5, RADIUS * 5, 1);
+    scene.add(glowSprite);
+
+    // ── Interaction: drag to rotate ──
+    let isDragging = false;
+    let prevX = 0, prevY = 0;
+    let rotVelY = 0.0014;
+    let rotVelX = 0;
+
+    const onPointerDown = (e) => { isDragging = true; prevX = e.clientX; prevY = e.clientY; };
+    const onPointerMove = (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - prevX;
+      const dy = e.clientY - prevY;
+      rotVelY = dx * 0.0006;
+      rotVelX = dy * 0.0006;
+      group.rotation.y += dx * 0.005;
+      group.rotation.x += dy * 0.005;
+      group.rotation.x = Math.max(-0.6, Math.min(0.6, group.rotation.x));
+      prevX = e.clientX; prevY = e.clientY;
     };
+    const onPointerUp = () => { isDragging = false; };
 
-    const draw = () => {
-      const W = canvas.width;
-      const H = canvas.height;
-      const R = W * 0.35;
-      t += 0.004;
-      ctx.clearRect(0, 0, W, H);
+    mount.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    mount.style.cursor = 'grab';
 
-      // Glow
-      const grd = ctx.createRadialGradient(W/2, H/2, R*0.1, W/2, H/2, R*1.1);
-      grd.addColorStop(0, 'rgba(37,99,235,0.12)');
-      grd.addColorStop(0.5, 'rgba(37,99,235,0.05)');
-      grd.addColorStop(1, 'transparent');
-      ctx.fillStyle = grd;
-      ctx.beginPath();
-      ctx.arc(W/2, H/2, R*1.1, 0, Math.PI*2);
-      ctx.fill();
+    // ── Resize handling ──
+    const handleResize = () => {
+      width = mount.clientWidth;
+      height_ = mount.clientHeight;
+      if (width === 0 || height_ === 0) return;
+      camera.aspect = width / height_;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height_);
+    };
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(mount);
 
-      // Draw latitude lines
-      for (let lat = -75; lat <= 75; lat += 25) {
-        const latR = (lat * Math.PI) / 180;
-        const rLat = R * Math.cos(latR);
-        const yLat = -R * Math.sin(latR);
-        const steps = 80;
-        ctx.save();
-        ctx.globalAlpha = 0.1;
-        ctx.strokeStyle = '#3B82F6';
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        let first = true;
-        for (let i = 0; i <= steps; i++) {
-          const lon = (i / steps) * 2 * Math.PI + t;
-          const px = rLat * Math.cos(lon);
-          const pz = rLat * Math.sin(lon);
-          const pp = project({ x: px, y: yLat + H/2 - H/2, z: pz }, W, H);
-          const bx = px * Math.cos(t) + pz * Math.sin(t);
-          const bz = -px * Math.sin(t) + pz * Math.cos(t);
-          if (bz + W * 0.5 > 0) {
-            if (first) { ctx.moveTo(pp.x, pp.y); first = false; }
-            else ctx.lineTo(pp.x, pp.y);
-          } else first = true;
-        }
-        ctx.stroke();
-        ctx.restore();
+    // ── Animate ──
+    let frameId;
+    const animate = () => {
+      if (!isDragging) {
+        group.rotation.y += rotVelY;
+        group.rotation.x += rotVelX;
+        rotVelX *= 0.94;
+        rotVelY += (0.0014 - rotVelY) * 0.02;
       }
 
-      // Draw longitude lines
-      for (let lon = 0; lon < 360; lon += 30) {
-        const lonR = ((lon + t * 57.3) * Math.PI) / 180;
-        ctx.save();
-        ctx.globalAlpha = 0.08;
-        ctx.strokeStyle = '#2563EB';
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        let first = true;
-        for (let lat = -90; lat <= 90; lat += 5) {
-          const latR = (lat * Math.PI) / 180;
-          let p = {
-            x: R * Math.cos(latR) * Math.cos(lonR),
-            y: R * Math.sin(latR),
-            z: R * Math.cos(latR) * Math.sin(lonR),
-          };
-          if (p.z + W * 0.5 > 0) {
-            const pp = project(p, W, H);
-            if (first) { ctx.moveTo(pp.x, pp.y); first = false; }
-            else ctx.lineTo(pp.x, pp.y);
-          } else first = true;
-        }
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // Globe sphere outline
-      ctx.save();
-      ctx.globalAlpha = 0.25;
-      ctx.strokeStyle = '#3B82F6';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(W/2, H/2, R, 0, Math.PI*2);
-      ctx.stroke();
-      ctx.restore();
-
-      // Rotate & project cities
-      const rotated = cities.map(c => {
-        const sp = toSphere(c.lon, c.lat, R);
-        return { ...rotateY(sp, t), name: c.name };
+      arcLines.forEach(({ curve, pulse }) => {
+        pulse.userData.t += pulse.userData.speed * 0.01;
+        if (pulse.userData.t > 1) pulse.userData.t = 0;
+        const pos = curve.getPoint(pulse.userData.t);
+        pulse.position.copy(pos);
       });
 
-      // Draw routes
-      routes.forEach(([a, b]) => {
-        const p1 = rotated[a], p2 = rotated[b];
-        drawArc(p1, p2, W, H, '#F97316', 0.7);
+      portMeshes.forEach((m, i) => {
+        const s = 1 + Math.sin(Date.now() * 0.002 + i) * 0.12;
+        m.scale.setScalar(s);
       });
 
-      // Draw cities
-      rotated.forEach(p => {
-        const pp = project(p, W, H);
-        if (!pp.visible) return;
-        const s = Math.max(2.5, pp.scale * 4);
-        ctx.save();
-        ctx.globalAlpha = pp.scale;
-        ctx.fillStyle = '#60A5FA';
-        ctx.beginPath();
-        ctx.arc(pp.x, pp.y, s, 0, Math.PI*2);
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(96,165,250,0.5)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(pp.x, pp.y, s * 2, 0, Math.PI*2);
-        ctx.stroke();
-        if (pp.scale > 0.7) {
-          ctx.fillStyle = 'rgba(255,255,255,0.7)';
-          ctx.font = `${Math.round(9 * pp.scale)}px Inter`;
-          ctx.fillText(p.name, pp.x + s + 4, pp.y + 3);
-        }
-        ctx.restore();
-      });
-
-      animId = requestAnimationFrame(draw);
+      renderer.render(scene, camera);
+      frameId = requestAnimationFrame(animate);
     };
+    animate();
 
-    draw();
-    return () => cancelAnimationFrame(animId);
+    return () => {
+      cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+      mount.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      renderer.dispose();
+      sphereGeo.dispose(); innerGeo.dispose(); dotGeo.dispose();
+      if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
+    };
   }, []);
 
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: '100%', height: '100%', display: 'block' }}
-    />
-  );
+  return <div ref={mountRef} style={{ width: '100%', height, touchAction: 'none' }} />;
 }
