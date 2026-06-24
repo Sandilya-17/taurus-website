@@ -199,7 +199,7 @@ function Hero() {
           </h1>
 
           <p className="hero-sub">
-            Taurus Trade & Logistics delivers end-to-end supply chain solutions
+            Taurus Tading & Logistics delivers end-to-end supply chain solutions
             across West Africa and beyond — powered by cutting-edge ERP technology,
             a trusted fleet, and a relentless commitment to on-time delivery.
           </p>
@@ -693,8 +693,8 @@ function Contact() {
               </div>
               {[
                 { icon:'📍', title:'Headquarters', text:'Accra, Ghana — Main Hub\nKumasi, Ghana — Regional Office' },
-                { icon:'📞', title:'Phone', text:'+233 (0) 30 000 0000\nAvailable 24/7 for emergencies' },
-                { icon:'✉️', title:'Email', text:'logistics@taurusgh.com\nops@taurusgh.com' },
+                { icon:'📞', title:'Phone', text:'+233 50 318 2656\nAvailable 24/7 for emergencies' },
+                { icon:'✉️', title:'Email', text:'taurusttltakoradi@gmail.com\nops@taurusgh.com' },
                 { icon:'🕐', title:'Operating Hours', text:'Mon–Fri: 6:00 AM – 10:00 PM\nWeekends: 7:00 AM – 8:00 PM' },
               ].map(c => (
                 <div className="contact-info-item" key={c.title}>
@@ -735,7 +735,7 @@ function Footer() {
           <div>
             <div style={{ display:'flex',alignItems:'center',gap:12 }}>
               <div style={{ width:36,height:36,background:'linear-gradient(135deg,#1E3A8A,#2563EB)',borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,fontSize:16,color:'#fff',fontFamily:'Space Grotesk' }}>T</div>
-              <div style={{ fontFamily:'Space Grotesk',fontWeight:800,fontSize:16 }}>Taurus Trade & Logistics</div>
+              <div style={{ fontFamily:'Space Grotesk',fontWeight:800,fontSize:16 }}>Taurus Tading & Logistics</div>
             </div>
             <p className="footer-brand-desc">Pan-African logistics excellence. Moving cargo across 12+ countries with integrity, technology, and speed since 2010.</p>
             <div style={{ display:'flex',gap:10,marginTop:20 }}>
@@ -765,7 +765,7 @@ function Footer() {
           ))}
         </div>
         <div className="footer-bottom">
-          <div className="footer-bottom-text">© {new Date().getFullYear()} Taurus Trade & Logistics. All rights reserved.</div>
+          <div className="footer-bottom-text">© {new Date().getFullYear()} Taurus Tading & Logistics. All rights reserved.</div>
           <div className="footer-bottom-text">Built with ❤️ in Accra, Ghana</div>
         </div>
       </div>
