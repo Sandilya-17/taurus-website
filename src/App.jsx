@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import ParticleBackground from './components/ParticleBackground';
 import Globe3D from './components/Globe3D';
 import Truck3D from './components/Truck3D';
